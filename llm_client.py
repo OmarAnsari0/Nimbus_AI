@@ -37,7 +37,7 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 
 LLM_API_KEY  = os.getenv("LLM_API_KEY", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.studio.nebius.ai/v1/")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
 LLM_MODEL    = os.getenv("LLM_MODEL",    "meta-llama/Meta-Llama-3.1-70B-Instruct")
 
 # ---------------------------------------------------------------------------
@@ -129,5 +129,4 @@ def summarize_with_llm(repo_context: str) -> str:
 
     # Extract the text from the response
     summary = response.choices[0].message.content.strip()
-
     return summary
