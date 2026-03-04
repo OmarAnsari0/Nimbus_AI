@@ -1,0 +1,6 @@
+fastapi==0.111.0        # Web framework — handles HTTP requests/responses
+uvicorn[standard]==0.29.0  # ASGI server — actually runs the FastAPI app
+openai==1.30.1          # OpenAI-compatible SDK (works with Nebius too)
+requests==2.31.0        # HTTP client — for calling the GitHub API
+python-dotenv==1.0.1    # Loads .env files into environment variables
+pydantic==2.7.1         # Data validation (FastAPI uses this internally)
