@@ -26,7 +26,7 @@ output is readable and useful.
 """
 
 import os
-# from openai import OpenAI
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load variables from .env file (if it exists)
@@ -129,4 +129,5 @@ def summarize_with_llm(repo_context: str) -> str:
 
     # Extract the text from the response
     summary = response.choices[0].message.content.strip()
+
     return summary
