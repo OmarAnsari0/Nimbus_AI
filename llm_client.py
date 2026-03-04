@@ -1,132 +1,100 @@
 """
-llm_client.py — Sends the repository context to an LLM and returns a summary.
+main.py — Entry point for the GitHub Repository Summarizer API.
 
-WHY THIS FILE EXISTS
---------------------
-This file handles all communication with the LLM (Large Language Model).
-It is separate from main.py so that:
-  - It's easy to swap out one LLM provider for another
-  - The prompting logic lives in one place
+This is a FastAPI application. FastAPI is a modern Python web framework
+that makes it easy to build APIs. It automatically generates documentation
+and validates request/response data.
 
-WHICH LLM?
-----------
-Nebius Token Factory provides an OpenAI-compatible API endpoint,
-so we use the `openai` Python library pointed at Nebius's base URL.
-This same code works with OpenAI, or any OpenAI-compatible provider —
-just change LLM_BASE_URL and LLM_API_KEY in your .env file.
-
-PROMPT DESIGN
--------------
-We use a two-part prompt:
-  - System prompt: tells the LLM what role it's playing and what format to use
-  - User prompt: contains the actual repo content and asks for the summary
-
-We ask the LLM to produce a structured answer with clear sections so the
-output is readable and useful.
+The app exposes one endpoint:
+  POST /summarize  →  accepts a GitHub URL, returns a project summary
 """
 
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, HttpUrl
+import uvicorn
 
-# Load variables from .env file (if it exists)
-load_dotenv()
-
-# ---------------------------------------------------------------------------
-# Configuration — read from environment variables
-# ---------------------------------------------------------------------------
-
-LLM_API_KEY  = os.getenv("LLM_API_KEY", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
-LLM_MODEL    = os.getenv("LLM_MODEL",    "meta-llama/Meta-Llama-3.1-70B-Instruct")
+from github_client import fetch_repo_contents
+from llm_client import summarize_with_llm
 
 # ---------------------------------------------------------------------------
-# Prompt templates
+# App setup
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a senior software engineer who specializes in quickly 
-understanding unfamiliar codebases. You will be given the contents of a GitHub 
-repository (directory structure + key file contents) and your job is to write 
-a clear, concise summary for a developer who has never seen this project before.
+app = FastAPI(
+    title="GitHub Repository Summarizer",
+    description="Give me a GitHub URL and I'll tell you what the project does.",
+    version="1.0.0",
+)
 
-Your summary must include these sections:
-
-## What This Project Does
-A 2-3 sentence plain-English explanation of the project's purpose and main functionality.
-
-## Technologies & Stack
-A bullet list of the main languages, frameworks, libraries, and tools used.
-
-## Project Structure
-A short description of how the code is organized (main directories, key files, 
-and their roles).
-
-## How to Get Started
-Based on what you can see (README, package files, etc.), briefly describe how 
-someone would install and run this project.
-
-## Notable Details
-Any interesting design decisions, patterns, or things worth knowing about.
-
-Keep the tone professional but approachable. Be specific — avoid vague statements 
-like "this is a well-structured project". Aim for 300-500 words total.
-If you cannot determine something from the provided files, say so rather than guessing.
-"""
-
-
-def _build_user_prompt(repo_context: str) -> str:
-    """Wrap the repo context in a clear instruction."""
-    return f"""Please summarize the following GitHub repository.
-
-{repo_context}
-
----
-Write your summary now, following the format described in your instructions."""
-
+# Allow all origins so the API can be called from a browser or any tool
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------------------------------------------------------------------------
-# Public function
+# Request / Response models
 # ---------------------------------------------------------------------------
 
-def summarize_with_llm(repo_context: str) -> str:
+class SummarizeRequest(BaseModel):
+    """What the caller must send in the request body (JSON)."""
+    github_url: str  # e.g. "https://github.com/owner/repo"
+
+class SummarizeResponse(BaseModel):
+    """What we send back."""
+    summary: str
+    repo_url: str
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/")
+def root():
+    """Health-check endpoint — just confirms the server is running."""
+    return {"status": "ok", "message": "GitHub Summarizer is running. POST to /summarize"}
+
+
+@app.post("/summarize", response_model=SummarizeResponse)
+async def summarize(request: SummarizeRequest):
     """
-    Send the repository context to the LLM and return the summary text.
+    Main endpoint.
 
-    Args:
-        repo_context: The string produced by github_client.fetch_repo_contents()
-
-    Returns:
-        A human-readable markdown summary of the repository.
-
-    Raises:
-        ValueError: If LLM_API_KEY is not set.
-        Exception: If the API call fails.
+    Steps:
+      1. Validate and parse the GitHub URL
+      2. Use the GitHub API to fetch important files from the repo
+      3. Send those files to an LLM and ask for a summary
+      4. Return the summary
     """
-    if not LLM_API_KEY:
-        raise ValueError(
-            "LLM_API_KEY environment variable is not set. "
-            "Please add it to your .env file. "
-            "Get a key from https://api.studio.nebius.ai/ (Nebius) "
-            "or https://platform.openai.com/api-keys (OpenAI)."
-        )
+    url = request.github_url.strip()
 
-    # Create the OpenAI client pointed at our chosen provider
-    client = OpenAI(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
-    )
+    # Basic sanity check
+    if "github.com" not in url:
+        raise HTTPException(status_code=400, detail="URL must be a GitHub repository URL.")
 
-    # Make the API call
-    response = client.chat.completions.create(
-        model=LLM_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": _build_user_prompt(repo_context)},
-        ],
-        temperature=0.3,   # Lower = more focused/deterministic
-        max_tokens=1024,   # Enough for a good summary, not too expensive
-    )
+    # --- Step 1: Fetch repo contents via GitHub API ---
+    try:
+        repo_context = fetch_repo_contents(url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch repository: {e}")
 
-    # Extract the text from the response
-    summary = response.choices[0].message.content.strip()
-    return summary
+    # --- Step 2: Ask the LLM to summarize ---
+    try:
+        summary = summarize_with_llm(repo_context)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+
+    return SummarizeResponse(summary=summary, repo_url=url)
+
+
+# ---------------------------------------------------------------------------
+# Run directly with:  python main.py
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
